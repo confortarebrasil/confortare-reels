@@ -176,7 +176,27 @@ def main():
     print("Vídeo baixado: %.1f MB" % (size / 1e6))
     if size < 100_000:
         fail("Vídeo baixado parece vazio ou corrompido.")
-    os.system("ffprobe -v error -show_entries stream=codec_type,codec_name,width,height,bit_rate,r_frame_rate,pix_fmt,color_transfer:format=duration,bit_rate -of compact %s" % path)
+
+    # Os vídeos não têm faixa de áudio; sem ela o Instagram não consegue
+    # encaixar a música. Acrescentamos uma faixa de silêncio (a imagem não muda).
+    import subprocess
+    import imageio_ffmpeg
+    ff = imageio_ffmpeg.get_ffmpeg_exe()
+    info = subprocess.run([ff, "-hide_banner", "-i", path], capture_output=True, text=True).stderr
+    if "Audio:" not in info:
+        out = "/tmp/reel_audio.mp4"
+        r = subprocess.run([
+            ff, "-y", "-hide_banner", "-loglevel", "error", "-i", path,
+            "-f", "lavfi", "-i", "anullsrc=channel_layout=stereo:sample_rate=44100",
+            "-map", "0:v:0", "-map", "1:a:0", "-c:v", "copy", "-c:a", "aac", "-b:a", "128k",
+            "-shortest", "-movflags", "+faststart", out,
+        ], capture_output=True, text=True)
+        if r.returncode != 0:
+            fail("Não consegui acrescentar a faixa de áudio: " + r.stderr[:500])
+        path = out
+        print("Faixa de silêncio acrescentada (%.1f MB)." % (os.path.getsize(path) / 1e6))
+    else:
+        print("Vídeo já tem faixa de áudio.")
 
     # O Instagram só aplica a música quando busca o vídeo por um link.
     # Colocamos só o vídeo do dia como anexo temporário no GitHub e apagamos no fim.
@@ -234,7 +254,7 @@ def main():
                 time.sleep(10)
             return {"status_code": "TIMEOUT"}
 
-        if DRY_RUN and os.environ.get("DIAGNOSTICO", "1") == "1":
+        if DRY_RUN and os.environ.get("DIAGNOSTICO", "0") == "1":
             for nome, audio, vv in (("sem música", False, 100), ("com música, som do vídeo 100", True, 100),
                                     ("com música, som do vídeo 1", True, 1)):
                 j = esperar(criar(audio, vv))
