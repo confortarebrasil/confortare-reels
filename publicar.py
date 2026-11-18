@@ -39,6 +39,7 @@ MUSICAS = [
 ]
 VOLUME_MUSICA = 70
 VOLUME_VIDEO = 100
+CAPA_MS = 1500  # momento do vídeo usado como capa (1,5 s)
 
 
 def escolher_musica(code):
@@ -66,7 +67,7 @@ def check(resp, what):
 def drive_session():
     info = json.loads(os.environ["GDRIVE_SA_KEY"])
     creds = service_account.Credentials.from_service_account_info(
-        info, scopes=["https://www.googleapis.com/auth/drive.readonly"]
+        info, scopes=["https://www.googleapis.com/auth/drive"]
     )
     return AuthorizedSession(creds)
 
@@ -161,73 +162,69 @@ def main():
     caption = find_caption(s, files, vf["name"], code)
     print("Legenda ok (%d caracteres)." % len(caption))
 
-    path = "/tmp/reel.mp4"
-    with s.get("%s/files/%s" % (DRIVE, vf["id"]), params={"alt": "media"}, stream=True) as r:
-        check(r, "Baixar vídeo")
-        with open(path, "wb") as out:
-            for chunk in r.iter_content(1024 * 1024):
-                out.write(chunk)
-    size = os.path.getsize(path)
-    print("Vídeo baixado: %.1f MB" % (size / 1e6))
-    if size < 100_000:
-        fail("Vídeo baixado parece vazio ou corrompido.")
-
-    musica = escolher_musica(code)
-    print("Música: " + musica["nome"])
-    r = check(
-        requests.post(
-            "%s/%s/media" % (GRAPH, IG_USER_ID),
-            headers=AUTH,
-            data={
-                "media_type": "REELS",
-                "upload_type": "resumable",
-                "caption": caption,
-                "share_to_feed": "true",
-                "audio_configuration": json.dumps({
-                    "audio_id": musica["audio_id"],
-                    "audio_volume": VOLUME_MUSICA,
-                    "video_volume": VOLUME_VIDEO,
-                }),
-            },
-            timeout=60,
+    # O Instagram só aplica a música quando busca o vídeo por um link.
+    # Abrimos um link temporário do vídeo no Drive e fechamos no fim.
+    perm = check(
+        s.post(
+            "%s/files/%s/permissions" % (DRIVE, vf["id"]),
+            params={"supportsAllDrives": "true"},
+            json={"type": "anyone", "role": "reader"},
         ),
-        "Criar container no Instagram",
-    )
-    container = r.json()["id"]
-    print("Container criado: " + container)
-
-    with open(path, "rb") as f:
+        "Abrir link temporário do vídeo",
+    ).json()["id"]
+    try:
+        video_url = "https://drive.usercontent.google.com/download?id=%s&export=download&confirm=t" % vf["id"]
+        musica = escolher_musica(code)
+        print("Música: " + musica["nome"])
         r = check(
             requests.post(
-                "%s/%s" % (RUPLOAD, container),
-                headers=dict(AUTH, offset="0", file_size=str(size)),
-                data=f,
-                timeout=900,
-            ),
-            "Enviar vídeo ao Instagram",
-        )
-    print("Vídeo enviado.")
-
-    status = ""
-    for _ in range(60):
-        r = check(
-            requests.get(
-                "%s/%s" % (GRAPH, container),
+                "%s/%s/media" % (GRAPH, IG_USER_ID),
                 headers=AUTH,
-                params={"fields": "status_code,status"},
+                data={
+                    "media_type": "REELS",
+                    "video_url": video_url,
+                    "caption": caption,
+                    "share_to_feed": "true",
+                    "thumb_offset": str(CAPA_MS),
+                    "audio_configuration": json.dumps({
+                        "audio_id": musica["audio_id"],
+                        "audio_volume": VOLUME_MUSICA,
+                        "video_volume": VOLUME_VIDEO,
+                    }),
+                },
                 timeout=60,
             ),
-            "Consultar status",
+            "Criar container no Instagram",
         )
-        status = r.json().get("status_code", "")
-        print("Status: " + status)
-        if status == "FINISHED":
-            break
-        if status in ("ERROR", "EXPIRED"):
-            fail("Instagram recusou o vídeo: " + r.text[:500])
-        time.sleep(10)
-    if status != "FINISHED":
-        fail("Instagram não terminou de processar o vídeo a tempo.")
+        container = r.json()["id"]
+        print("Container criado: " + container)
+
+        status = ""
+        for _ in range(60):
+            r = check(
+                requests.get(
+                    "%s/%s" % (GRAPH, container),
+                    headers=AUTH,
+                    params={"fields": "status_code,status"},
+                    timeout=60,
+                ),
+                "Consultar status",
+            )
+            status = r.json().get("status_code", "")
+            print("Status: " + status)
+            if status == "FINISHED":
+                break
+            if status in ("ERROR", "EXPIRED"):
+                fail("Instagram recusou o vídeo: " + r.text[:500])
+            time.sleep(10)
+        if status != "FINISHED":
+            fail("Instagram não terminou de processar o vídeo a tempo.")
+    finally:
+        s.delete(
+            "%s/files/%s/permissions/%s" % (DRIVE, vf["id"], perm),
+            params={"supportsAllDrives": "true"},
+        )
+        print("Link temporário fechado.")
 
     if DRY_RUN:
         print("TESTE OK (dry-run): tudo funcionou, só não publiquei.")
