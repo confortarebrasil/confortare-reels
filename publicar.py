@@ -20,8 +20,8 @@ import requests
 from google.auth.transport.requests import AuthorizedSession
 from google.oauth2 import service_account
 
-GRAPH = "https://graph.facebook.com/v21.0"
-RUPLOAD = "https://rupload.facebook.com/ig-api-upload/v21.0"
+GRAPH = "https://graph.facebook.com/v27.0"
+RUPLOAD = "https://rupload.facebook.com/ig-api-upload/v27.0"
 DRIVE = "https://www.googleapis.com/drive/v3"
 FOLDER_ID = "10G6Sq8OkwhJXu1auwvWQe0Gh8a5loZLi"  # 03 REELS PRONTOS
 IG_USER_ID = os.environ.get("IG_USER_ID", "17841411266083237")
@@ -31,6 +31,19 @@ REEL_ARG = os.environ.get("REEL", "").strip().upper()  # ex.: R017 (opcional)
 STATE_FILE = "posted.json"
 NAME_RE = re.compile(r"^(R\d{3})_(\d{4}-\d{2}-\d{2})_.*\.mp4$", re.IGNORECASE)
 AUTH = {"Authorization": "Bearer " + TOKEN}
+
+# Músicas do catálogo liberado do Instagram (audio_id). A cada 3 Reels troca
+# para a próxima da lista. Para acrescentar, coloque mais itens aqui.
+MUSICAS = [
+    {"nome": "Mozart Lacrimosa Remix - Giulio Cercato", "audio_id": "1585340805646465"},
+]
+VOLUME_MUSICA = 70
+VOLUME_VIDEO = 100
+
+
+def escolher_musica(code):
+    n = int(code[1:])
+    return MUSICAS[((n - 1) // 3) % len(MUSICAS)]
 
 
 def fail(msg):
@@ -159,6 +172,8 @@ def main():
     if size < 100_000:
         fail("Vídeo baixado parece vazio ou corrompido.")
 
+    musica = escolher_musica(code)
+    print("Música: " + musica["nome"])
     r = check(
         requests.post(
             "%s/%s/media" % (GRAPH, IG_USER_ID),
@@ -168,6 +183,11 @@ def main():
                 "upload_type": "resumable",
                 "caption": caption,
                 "share_to_feed": "true",
+                "audio_configuration": json.dumps({
+                    "audio_id": musica["audio_id"],
+                    "audio_volume": VOLUME_MUSICA,
+                    "video_volume": VOLUME_VIDEO,
+                }),
             },
             timeout=60,
         ),
