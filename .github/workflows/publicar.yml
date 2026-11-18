@@ -1,0 +1,45 @@
+name: Publicar Reel do dia
+
+on:
+  schedule:
+    - cron: "0 22 * * *" # 22h UTC = 19h de Brasília
+  workflow_dispatch:
+    inputs:
+      reel:
+        description: "Código do Reel (ex.: R017). Vazio = Reel de hoje"
+        required: false
+        default: ""
+      dry_run:
+        description: "true = só testa, não publica"
+        required: false
+        default: "true"
+
+permissions:
+  contents: write
+
+concurrency: publicar
+
+jobs:
+  publicar:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - run: pip install requests google-auth
+      - name: Publicar
+        env:
+          IG_PAGE_TOKEN: ${{ secrets.IG_PAGE_TOKEN }}
+          GDRIVE_SA_KEY: ${{ secrets.GDRIVE_SA_KEY }}
+          REEL: ${{ inputs.reel }}
+          DRY_RUN: ${{ inputs.dry_run || 'false' }}
+        run: python publicar.py
+      - name: Guardar registro
+        if: success()
+        run: |
+          git config user.name "confortare-bot"
+          git config user.email "confortare-bot@users.noreply.github.com"
+          git add posted.json
+          git diff --cached --quiet || (git commit -m "Registro de publicação" && git push)
