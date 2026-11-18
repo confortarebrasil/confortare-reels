@@ -176,6 +176,7 @@ def main():
     print("Vídeo baixado: %.1f MB" % (size / 1e6))
     if size < 100_000:
         fail("Vídeo baixado parece vazio ou corrompido.")
+    os.system("ffprobe -v error -show_entries stream=codec_type,codec_name,width,height,bit_rate,r_frame_rate,pix_fmt,color_transfer:format=duration,bit_rate -of compact %s" % path)
 
     # O Instagram só aplica a música quando busca o vídeo por um link.
     # Colocamos só o vídeo do dia como anexo temporário no GitHub e apagamos no fim.
@@ -204,49 +205,49 @@ def main():
 
         musica = escolher_musica(code)
         print("Música: " + musica["nome"])
-        r = check(
-            requests.post(
-                "%s/%s/media" % (GRAPH, IG_USER_ID),
-                headers=AUTH,
-                data={
-                    "media_type": "REELS",
-                    "video_url": video_url,
-                    "caption": caption,
-                    "share_to_feed": "true",
-                    "thumb_offset": str(CAPA_MS),
-                    "audio_configuration": json.dumps({
-                        "audio_id": musica["audio_id"],
-                        "audio_volume": VOLUME_MUSICA,
-                        "video_volume": VOLUME_VIDEO,
-                    }),
-                },
-                timeout=60,
-            ),
-            "Criar container no Instagram",
-        )
-        container = r.json()["id"]
-        print("Container criado: " + container)
 
-        status = ""
-        for _ in range(60):
-            r = check(
-                requests.get(
-                    "%s/%s" % (GRAPH, container),
-                    headers=AUTH,
-                    params={"fields": "status_code,status"},
-                    timeout=60,
-                ),
-                "Consultar status",
-            )
-            status = r.json().get("status_code", "")
-            print("Status: " + status)
-            if status == "FINISHED":
-                break
-            if status in ("ERROR", "EXPIRED"):
-                fail("Instagram recusou o vídeo: " + r.text[:500])
-            time.sleep(10)
+        def criar(audio, vv):
+            data = {
+                "media_type": "REELS",
+                "video_url": video_url,
+                "caption": caption,
+                "share_to_feed": "true",
+                "thumb_offset": str(CAPA_MS),
+            }
+            if audio:
+                data["audio_configuration"] = json.dumps({
+                    "audio_id": musica["audio_id"],
+                    "audio_volume": VOLUME_MUSICA,
+                    "video_volume": vv,
+                })
+            r = check(requests.post("%s/%s/media" % (GRAPH, IG_USER_ID), headers=AUTH, data=data, timeout=60),
+                      "Criar container no Instagram")
+            return r.json()["id"]
+
+        def esperar(cid):
+            for _ in range(60):
+                r = check(requests.get("%s/%s" % (GRAPH, cid), headers=AUTH,
+                                       params={"fields": "status_code,status"}, timeout=60), "Consultar status")
+                j = r.json()
+                if j.get("status_code") in ("FINISHED", "ERROR", "EXPIRED"):
+                    return j
+                time.sleep(10)
+            return {"status_code": "TIMEOUT"}
+
+        if DRY_RUN and os.environ.get("DIAGNOSTICO", "1") == "1":
+            for nome, audio, vv in (("sem música", False, 100), ("com música, som do vídeo 100", True, 100),
+                                    ("com música, som do vídeo 1", True, 1)):
+                j = esperar(criar(audio, vv))
+                print("DIAGNÓSTICO [%s]: %s" % (nome, j.get("status", j.get("status_code"))))
+            fail("Diagnóstico concluído (nada publicado).")
+
+        container = criar(True, VOLUME_VIDEO)
+        print("Container criado: " + container)
+        j = esperar(container)
+        status = j.get("status_code", "")
+        print("Status: " + status)
         if status != "FINISHED":
-            fail("Instagram não terminou de processar o vídeo a tempo.")
+            fail("Instagram recusou o vídeo: " + json.dumps(j)[:500])
     finally:
         requests.delete("%s/releases/%s" % (GH_API, rel["id"]), headers=GH_AUTH, timeout=60)
         requests.delete("%s/git/refs/tags/%s" % (GH_API, tag), headers=GH_AUTH, timeout=60)
