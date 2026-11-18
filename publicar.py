@@ -31,6 +31,10 @@ REEL_ARG = os.environ.get("REEL", "").strip().upper()  # ex.: R017 (opcional)
 STATE_FILE = "posted.json"
 NAME_RE = re.compile(r"^(R\d{3})_(\d{4}-\d{2}-\d{2})_.*\.mp4$", re.IGNORECASE)
 AUTH = {"Authorization": "Bearer " + TOKEN}
+GH_TOKEN = os.environ.get("GITHUB_TOKEN", "")
+GH_REPO = os.environ.get("GITHUB_REPOSITORY", "confortarebrasil/confortare-reels")
+GH_API = "https://api.github.com/repos/" + GH_REPO
+GH_AUTH = {"Authorization": "Bearer " + GH_TOKEN, "Accept": "application/vnd.github+json"}
 
 # Músicas do catálogo liberado do Instagram (audio_id). A cada 3 Reels troca
 # para a próxima da lista. Para acrescentar, coloque mais itens aqui.
@@ -67,7 +71,7 @@ def check(resp, what):
 def drive_session():
     info = json.loads(os.environ["GDRIVE_SA_KEY"])
     creds = service_account.Credentials.from_service_account_info(
-        info, scopes=["https://www.googleapis.com/auth/drive"]
+        info, scopes=["https://www.googleapis.com/auth/drive.readonly"]
     )
     return AuthorizedSession(creds)
 
@@ -162,18 +166,42 @@ def main():
     caption = find_caption(s, files, vf["name"], code)
     print("Legenda ok (%d caracteres)." % len(caption))
 
+    path = "/tmp/reel.mp4"
+    with s.get("%s/files/%s" % (DRIVE, vf["id"]), params={"alt": "media"}, stream=True) as r:
+        check(r, "Baixar vídeo do Drive")
+        with open(path, "wb") as out:
+            for chunk in r.iter_content(1024 * 1024):
+                out.write(chunk)
+    size = os.path.getsize(path)
+    print("Vídeo baixado: %.1f MB" % (size / 1e6))
+    if size < 100_000:
+        fail("Vídeo baixado parece vazio ou corrompido.")
+
     # O Instagram só aplica a música quando busca o vídeo por um link.
-    # Abrimos um link temporário do vídeo no Drive e fechamos no fim.
-    perm = check(
-        s.post(
-            "%s/files/%s/permissions" % (DRIVE, vf["id"]),
-            params={"supportsAllDrives": "true"},
-            json={"type": "anyone", "role": "reader"},
-        ),
-        "Abrir link temporário do vídeo",
-    ).json()["id"]
+    # Colocamos só o vídeo do dia como anexo temporário no GitHub e apagamos no fim.
+    tag = "tmp-%s-%d" % (code.lower(), int(time.time()))
+    rel = check(
+        requests.post(GH_API + "/releases", headers=GH_AUTH, json={
+            "tag_name": tag, "name": tag, "prerelease": True,
+            "body": "Arquivo temporário para o Instagram baixar. Apagado automaticamente.",
+        }, timeout=60),
+        "Criar anexo temporário",
+    ).json()
     try:
-        video_url = "https://drive.usercontent.google.com/download?id=%s&export=download&confirm=t" % vf["id"]
+        with open(path, "rb") as f:
+            asset = check(
+                requests.post(
+                    "https://uploads.github.com/repos/%s/releases/%s/assets" % (GH_REPO, rel["id"]),
+                    headers=dict(GH_AUTH, **{"Content-Type": "video/mp4"}),
+                    params={"name": "%s.mp4" % code},
+                    data=f,
+                    timeout=600,
+                ),
+                "Enviar vídeo ao anexo temporário",
+            ).json()
+        video_url = asset["browser_download_url"]
+        print("Link temporário criado.")
+
         musica = escolher_musica(code)
         print("Música: " + musica["nome"])
         r = check(
@@ -220,11 +248,9 @@ def main():
         if status != "FINISHED":
             fail("Instagram não terminou de processar o vídeo a tempo.")
     finally:
-        s.delete(
-            "%s/files/%s/permissions/%s" % (DRIVE, vf["id"], perm),
-            params={"supportsAllDrives": "true"},
-        )
-        print("Link temporário fechado.")
+        requests.delete("%s/releases/%s" % (GH_API, rel["id"]), headers=GH_AUTH, timeout=60)
+        requests.delete("%s/git/refs/tags/%s" % (GH_API, tag), headers=GH_AUTH, timeout=60)
+        print("Link temporário apagado.")
 
     if DRY_RUN:
         print("TESTE OK (dry-run): tudo funcionou, só não publiquei.")
