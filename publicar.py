@@ -29,6 +29,10 @@ TOKEN = os.environ["IG_PAGE_TOKEN"]
 DRY_RUN = os.environ.get("DRY_RUN", "false").strip().lower() == "true"
 REEL_ARG = os.environ.get("REEL", "").strip().upper()  # ex.: R017 (opcional)
 STATE_FILE = "posted.json"
+MODO = os.environ.get("MODO", "").strip().lower()
+# Reels atrasados, em ordem. Nos horários extras do dia, o robô posta o
+# primeiro desta lista que ainda não estiver em posted.json.
+ATRASADOS = ["R006", "R007", "R009", "R010", "R011", "R012", "R013", "R014", "R015", "R016"]
 NAME_RE = re.compile(r"^(R\d{3})_(\d{4}-\d{2}-\d{2})_.*\.mp4$", re.IGNORECASE)
 AUTH = {"Authorization": "Bearer " + TOKEN}
 GH_TOKEN = os.environ.get("GITHUB_TOKEN", "")
@@ -43,7 +47,7 @@ MUSICAS = [
 ]
 VOLUME_MUSICA = 70
 VOLUME_VIDEO = 100
-CAPA_MS = 1500  # momento do vídeo usado como capa (1,5 s)
+CAPA_MS = 4000  # momento do vídeo usado como capa (4 s, já com o texto)
 
 
 def escolher_musica(code):
@@ -144,9 +148,19 @@ def main():
         if m:
             videos.append((m.group(1).upper(), m.group(2), f))
 
-    if REEL_ARG:
-        chosen = [v for v in videos if v[0] == REEL_ARG]
-        label = REEL_ARG
+    reel_arg = REEL_ARG
+    if not reel_arg and MODO == "atrasados":
+        state0 = load_state()
+        pend = [c for c in ATRASADOS if c not in state0]
+        if not pend:
+            print("Nenhum Reel atrasado pendente. Nada a fazer.")
+            return
+        reel_arg = pend[0]
+        print("Modo atrasados: próximo é %s (faltam %d)." % (reel_arg, len(pend)))
+
+    if reel_arg:
+        chosen = [v for v in videos if v[0] == reel_arg]
+        label = reel_arg
     else:
         today = datetime.now(ZoneInfo("America/Sao_Paulo")).strftime("%Y-%m-%d")
         chosen = [v for v in videos if v[1] == today]
