@@ -1,0 +1,81 @@
+name: Stories do dia
+
+on:
+  schedule:
+    - cron: "0 9 * * *"   # 09h UTC = 06h de Brasília (propósito de hoje)
+    - cron: "0 23 * * *"  # 23h UTC = 20h de Brasília (Reel de hoje no perfil)
+  workflow_dispatch:
+    inputs:
+      slot:
+        description: "manha ou noite (vazio = pelo horário)"
+        required: false
+        default: ""
+      data:
+        description: "Data AAAA-MM-DD (vazio = hoje)"
+        required: false
+        default: ""
+      dry_run:
+        description: "true = só testa, não publica"
+        required: false
+        default: "true"
+
+permissions:
+  contents: write
+
+concurrency: stories
+
+jobs:
+  story:
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Instalar ferramentas
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq ffmpeg librsvg2-bin > /dev/null
+          pip install -q requests google-auth pillow numpy fonttools
+      - name: Baixar o robô dos Stories do Drive
+        env:
+          GDRIVE_SA_KEY: ${{ secrets.GDRIVE_SA_KEY }}
+        run: |
+          python - <<'PY'
+          import json, os
+          from google.oauth2 import service_account
+          from google.auth.transport.requests import AuthorizedSession
+          c = service_account.Credentials.from_service_account_info(json.loads(os.environ["GDRIVE_SA_KEY"]), scopes=["https://www.googleapis.com/auth/drive.readonly"])
+          s = AuthorizedSession(c)
+          D = "https://www.googleapis.com/drive/v3/files"
+          fs = s.get(D, params={"q": "'1-A3MaFhFh3oDRXjvNkHCxzVyRMZ6fhWD' in parents and trashed=false", "fields": "files(id,name)"}).json()["files"]
+          os.makedirs("kit", exist_ok=True)
+          for f in fs:
+              dst = ("kit/" if f["name"].endswith((".ttf", ".svg")) else "") + f["name"]
+              r = s.get(D + "/" + f["id"], params={"alt": "media"}); r.raise_for_status()
+              open(dst, "wb").write(r.content); print("ok", dst, len(r.content))
+          PY
+      - name: Gerar e publicar Story
+        env:
+          IG_PAGE_TOKEN: ${{ secrets.IG_PAGE_TOKEN }}
+          GDRIVE_SA_KEY: ${{ secrets.GDRIVE_SA_KEY }}
+          SLOT: ${{ github.event_name == 'schedule' && (github.event.schedule == '0 9 * * *' && 'manha' || 'noite') || inputs.slot }}
+          DATA: ${{ inputs.data }}
+          DRY_RUN: ${{ inputs.dry_run || 'false' }}
+        run: python stories.py
+      - name: Guardar prévia do vídeo
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: story-previa
+          path: /tmp/story.mp4
+          if-no-files-found: ignore
+          retention-days: 7
+      - name: Guardar registro
+        if: success()
+        run: |
+          git config user.name "confortare-bot"
+          git config user.email "confortare-bot@users.noreply.github.com"
+          git add posted_stories.json 2>/dev/null || true
+          git diff --cached --quiet || (git commit -m "Registro de Story" && git pull --rebase && git push)
